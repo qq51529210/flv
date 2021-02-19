@@ -50,10 +50,9 @@ func uint24(b []byte) uint32 {
 }
 
 type Header struct {
-	buff       [9]byte
-	Version    byte
-	Flag       HeaderFlag
-	DataOffset uint32
+	buff    [13]byte
+	Version byte
+	Flag    HeaderFlag
 }
 
 func (h *Header) WriteTo(writer io.Writer) (int64, error) {
@@ -62,7 +61,8 @@ func (h *Header) WriteTo(writer io.Writer) (int64, error) {
 	h.buff[2] = 'V'
 	h.buff[3] = h.Version
 	h.buff[4] = byte(h.Flag)
-	binary.BigEndian.PutUint32(h.buff[5:], h.DataOffset)
+	binary.BigEndian.PutUint32(h.buff[5:], 9)
+	binary.BigEndian.PutUint32(h.buff[9:], 0)
 	n, err := writer.Write(h.buff[:])
 	return int64(n), err
 }
@@ -77,25 +77,26 @@ func (h *Header) ReadFrom(reader io.Reader) (int64, error) {
 	}
 	h.Version = h.buff[3]
 	h.Flag = HeaderFlag(h.buff[4])
-	h.DataOffset = binary.BigEndian.Uint32(h.buff[5:])
+	binary.BigEndian.Uint32(h.buff[5:])
+	// first previous size
+	binary.BigEndian.Uint32(h.buff[9:])
 	return int64(n), err
 }
 
 type Tag struct {
-	buff        [15]byte
-	PrevTagSize uint32
-	Flag        TagFlag
-	Timestamp   uint32
-	StreamID    uint32
-	Data        []byte
+	buff      [15]byte
+	Flag      TagFlag
+	Timestamp uint32
+	StreamID  uint32
+	Data      []byte
 }
 
 func (t *Tag) WriteTo(writer io.Writer) (int64, error) {
-	binary.BigEndian.PutUint32(t.buff[0:], t.PrevTagSize)
-	t.buff[4] = byte(t.Flag)
-	putUint24(t.buff[5:], uint32(len(t.Data)))
-	binary.BigEndian.PutUint32(t.buff[8:], t.Timestamp)
-	putUint24(t.buff[12:], t.StreamID)
+	t.buff[0] = byte(t.Flag)
+	putUint24(t.buff[1:], uint32(len(t.Data)))
+	binary.BigEndian.PutUint32(t.buff[4:], t.Timestamp)
+	putUint24(t.buff[8:], t.StreamID)
+	binary.BigEndian.PutUint32(t.buff[11:], uint32(len(t.Data)))
 	n, err := writer.Write(t.buff[:])
 	if err != nil {
 		return int64(n), err
@@ -105,28 +106,22 @@ func (t *Tag) WriteTo(writer io.Writer) (int64, error) {
 }
 
 func (t *Tag) ReadFrom(reader io.Reader) (int64, error) {
-	n, m := 0, 0
-	var err error
-	for m < len(t.buff) {
-		n, err = reader.Read(t.buff[m:])
-		if err != nil {
-			return int64(n), err
-		}
-		m += n
+	n, err := io.ReadFull(reader, t.buff[:11])
+	if err != nil {
+		return int64(n), err
 	}
-	if !IsTagFlag(t.buff[4]) {
+	if !IsTagFlag(t.buff[0]) {
 		return int64(n), errInvalidTagFormat
 	}
-	t.PrevTagSize = binary.BigEndian.Uint32(t.buff[0:])
-	t.Flag = TagFlag(t.buff[4])
-	dataSize := int(uint24(t.buff[5:]))
-	t.Timestamp = binary.BigEndian.Uint32(t.buff[8:])
-	t.StreamID = uint24(t.buff[12:])
+	t.Flag = TagFlag(t.buff[0])
+	dataSize := int(uint24(t.buff[1:]))
+	t.Timestamp = binary.BigEndian.Uint32(t.buff[4:])
+	t.StreamID = uint24(t.buff[8:])
 	if cap(t.Data) < dataSize {
 		t.Data = make([]byte, dataSize)
 	} else {
 		t.Data = t.Data[:dataSize]
 	}
 	n, err = io.ReadFull(reader, t.Data)
-	return int64(n + m), err
+	return int64(n + 11), err
 }
